@@ -1,7 +1,13 @@
+(function () {
+/* --- Infraestructura de nivel: todo queda encapsulado y se puede destruir --- */
+const __listeners = [];
+function __on(target, type, fn, opts) { target.addEventListener(type, fn, opts); __listeners.push([target, type, fn, opts]); }
+let __raf = 0, __alive = true;
+
 /* ============================================================
    Clarita busca a Any
    Juego de plataformas sin sprites: todo se dibuja con formas.
-   Clarita recorre 6 cuadras (con una calle en obra en el medio), espera el semáforo en verde para
+   Clarita recorre 11 cuadras (camión de mudanza, calle en obra, bus, skatepark y camión varado con autoelevador), espera el semáforo en verde para
    cruzar, junta moneditas y alcanza a Any, que va en bicicleta.
    ============================================================ */
 
@@ -14,21 +20,47 @@ const PI2 = Math.PI * 2;
 /* ---------- Mundo ---------- */
 const GROUND = 440;          // altura de la vereda por donde corre Clarita
 const HORIZON = 330;         // horizonte (para la perspectiva de las calles)
-const BLOCKS = 9;            // cuadras
+const BLOCKS = 11;           // cuadras
 const BLOCK_LEN = 2100;      // largo de cada cuadra
 const STREET_W = 380;        // ancho de cada calle que se cruza
 const UNIT = 210;            // ancho de cada local
-const SITE_STREET = 2;       // la calle del medio del recorrido está en obra
+const SITE_STREET = 3;       // la calle en obra (después de la cuadra 4)
 const CONSTR_W = 1300;       // ancho de la zona de obra (2 edificios + calle cerrada)
-const SKATE_STREET = 6, SKATE_W = 1500;   // skatepark: la calle 7 (después de bajar del bus)
+const SKATE_STREET = 7, SKATE_W = 1500;   // skatepark: la calle 8 (después de bajar del bus)
 const streetW = (i) => (i === SITE_STREET ? CONSTR_W : i === SKATE_STREET ? SKATE_W : STREET_W);
 const blockStart = (i) => { let x = i * BLOCK_LEN; for (let j = 0; j < i; j++) x += streetW(j); return x; };
 // Pisos del andamio (altura de las tablas) y medidas de la obra (relativas al inicio de la zona)
 const L1 = GROUND - 88, L2 = GROUND - 176, L3 = GROUND - 264;
-const BUS_FIRST = 3, BUS_BLOCKS = 3, BUS_SPEED = 8;   // el bus lleva 3 cuadras (la 4, 5 y 6)
+const BUS_FIRST = 4, BUS_BLOCKS = 3, BUS_SPEED = 8;   // el bus lleva 3 cuadras (la 5, 6 y 7)
 const WALL_H = 226;          // la valla es más alta que el salto: hay que ir por el puente
 const SITE = { A0: 60, A1: 460, B0: 840, B1: 1240, BR0: 470, BR1: 830, WALL0: 605, WALL1: 695 };
-const streetStart = (i) => blockStart(i) + BLOCK_LEN;   // i = 0..3
+/* Camión de mudanza: tapa la vereda. Hay que empujar la caja roja (con la cabeza) hasta la
+   pila de cajas, subir por las cajas al camión, cruzar el techo y bajar por las cajas del otro lado. */
+const MOVE_BLOCK = 1;        // cuadra del camión (0 = la primera cuadra, 1 = la segunda...)
+const CRATE = 44;            // lado de cada caja
+const TRUCK_CARGO_W = 200, TRUCK_CAB_W = 100;
+const TRUCK_H = 140, CAB_H = 108;   // techos más altos que un salto (~110): hay que usar las cajas
+const TRUCK_SPAN = CRATE * 3 + TRUCK_CARGO_W + TRUCK_CAB_W;   // pila izq. + camión + cajas de bajada
+const TRUCK_AT = 1000;       // dónde empieza la pila de cajas dentro de la cuadra
+const PUSH_DIST = 300;       // distancia inicial entre la caja roja y la pila de cajas
+const NOSE = 9;              // cuánto sobresale la nariz del cuerpo de Clarita (empuja con la cabeza)
+const PUSH_SPEED = 1.7;      // velocidad de Clarita mientras empuja
+/* Camión varado: un camión grande corta el tránsito y la vereda. Clarita maneja un autoelevador,
+   junta cajas y arma una escalera (6 cajas) para subir al camión, cruzarlo por arriba y bajar. */
+const LIFT_BLOCK = 9;        // cuadra del camión varado (0 = la primera cuadra)
+const LT_AT = 1380;          // dónde empieza la carga del camión dentro de la cuadra
+const LT_CARGO_W = 220, LT_CAB_W = 110;
+const LT_BED = 48;           // alto de la plataforma del camión
+const LT_H = LT_BED + 3 * CRATE;   // techo de la carga (3 filas de cajas): más alto que un salto
+const LT_CAB_H = 128;        // techo de la cabina
+const LT_STEPS = [3, 2, 1];  // columnas de la escalera (cajas), de la más cercana al camión a la más lejana
+const FK_SPEED = 2.9;        // velocidad del autoelevador
+const FK_W = 84;             // ancho del cuerpo del autoelevador
+const FK_REACH = 50;         // distancia entre el centro del autoelevador y la caja que lleva
+const FK_CARRY = 52;         // altura de la caja mientras se transporta
+const FK_LIFT = 2.4;         // velocidad del mástil
+const FK_TOL = 20;           // tolerancia para alinear la caja con el hueco
+const streetStart = (i) => blockStart(i) + BLOCK_LEN;   // i = 0..BLOCKS-2
 const FINISH_X = blockStart(BLOCKS - 1) + BLOCK_LEN;
 const WORLD_START = -840;
 const WORLD_END = FINISH_X + 900;
@@ -129,6 +161,24 @@ function coinSound() {
   } catch (_) { /* sin audio */ }
 }
 
+/* "Toc" grave cuando la caja choca contra la pila */
+function thudSound() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const t = audioCtx.currentTime;
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(50, t + 0.14);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.16, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t); o.stop(t + 0.22);
+  } catch (_) { /* sin audio */ }
+}
+
 /* ---------- Imagen de introducción y música de fondo ---------- */
 const introImg = new Image();
 introImg.src = "multimedia/intro.jpg";
@@ -143,7 +193,7 @@ function restartMusic() {
   musicWanted = true;
   music.play().catch(() => { /* el navegador la deja empezar con el próximo toque */ });
 }
-document.addEventListener("visibilitychange", () => {   // se calla si cambias de pestaña
+__on(document, "visibilitychange", () => {   // se calla si cambias de pestaña
   if (document.hidden) music.pause();
   else if (musicWanted) music.play().catch(() => {});
 });
@@ -178,7 +228,7 @@ const KEY_MAP = {
   ArrowUp: "jump", KeyW: "jump", Space: "jump",
 };
 
-window.addEventListener("keydown", (e) => {
+__on(window, "keydown", (e) => {
   const action = KEY_MAP[e.code];
   if (action) {
     e.preventDefault();
@@ -186,16 +236,17 @@ window.addEventListener("keydown", (e) => {
     keys[action] = true;
   }
   if (e.code === "KeyM") music.muted = !music.muted;   // M: silenciar / activar la música
-  if (e.code === "Enter" || e.code === "Space") advanceState();
+  if ((e.code === "Enter" || e.code === "Space") && !e.repeat) advanceState();
 });
 
-window.addEventListener("keyup", (e) => {
+__on(window, "keyup", (e) => {
   const action = KEY_MAP[e.code];
   if (action) keys[action] = false;
 });
 
 function bindButton(id, action) {
   const el = document.getElementById(id);
+  if (!el) return;   // si el botón táctil no existe en el HTML, se ignora
   const down = (e) => {
     e.preventDefault();
     if (action === "jump" && !keys.jump) jumpPressed = true;
@@ -208,25 +259,25 @@ function bindButton(id, action) {
     keys[action] = false;
     el.classList.remove("on");
   };
-  el.addEventListener("pointerdown", down);
-  el.addEventListener("pointerup", up);
-  el.addEventListener("pointerleave", up);
-  el.addEventListener("pointercancel", up);
+  __on(el, "pointerdown", down);
+  __on(el, "pointerup", up);
+  __on(el, "pointerleave", up);
+  __on(el, "pointercancel", up);
 }
 bindButton("btnLeft", "left");
 bindButton("btnRight", "right");
 bindButton("btnJump", "jump");
-canvas.addEventListener("pointerdown", advanceState);
+__on(canvas, "pointerdown", advanceState);
 
 function advanceState() {
   if (state === "start") startGame();
-  else if (state === "won" && wonT > 90) startGame();
+  else if (state === "won" && wonT > 90) window.dispatchEvent(new CustomEvent("nivel-siguiente", { detail: { nivel: 1 } }));
   else if (state === "over") retry();
 }
 
 /* ---------- Estado ---------- */
 let state = "start";   // "start" | "play" | "over" | "won"
-let player, solids, coins, streets, site, bus, park, boards, deco, particles, any;
+let player, solids, coins, streets, site, bus, park, boards, deco, particles, any, truck, lift;
 let camX, time, elapsed, hearts, coinCount, blockIdx, checkpoint, checkpointCoins;
 let bannerText = "", bannerT = 0, shake = 0, flash = 0, wonT = 0;
 let totalCoins = 0, best = 0;
@@ -235,14 +286,16 @@ try { best = Number(localStorage.getItem("clarita-best")) || 0; } catch (_) { /*
 
 const BANNERS = [
   `Cuadra 1 de ${BLOCKS}: Any salió en bici. ¡Clarita, a buscarla!`,
-  `Cuadra 2 de ${BLOCKS}: hay huellas de bici en la vereda.`,
-  `Cuadra 3 de ${BLOCKS}: ¡más adelante hay una calle en obra!`,
-  `Cuadra 4 de ${BLOCKS}: ¡pasaste la obra! Sube al bus para avanzar 3 cuadras.`,
-  `Cuadra 5 de ${BLOCKS}: ¡el bus te lleva!`,
-  `Cuadra 6 de ${BLOCKS}: ¡ya casi bajas del bus!`,
-  `Cuadra 7 de ${BLOCKS}: ¡a seguir a pie! Más adelante hay un skatepark.`,
-  `Cuadra 8 de ${BLOCKS}: ¡cada vez más cerca!`,
-  `Cuadra 9 de ${BLOCKS}: ¡Ahí va Any! ¡Alcánzala!`,
+  `Cuadra 2 de ${BLOCKS}: ¡un camión de mudanza tapa la vereda! Empuja la caja roja con la cabeza.`,
+  `Cuadra 3 de ${BLOCKS}: hay huellas de bici en la vereda.`,
+  `Cuadra 4 de ${BLOCKS}: ¡más adelante hay una calle en obra!`,
+  `Cuadra 5 de ${BLOCKS}: ¡pasaste la obra! Sube al bus para avanzar 3 cuadras.`,
+  `Cuadra 6 de ${BLOCKS}: ¡el bus te lleva!`,
+  `Cuadra 7 de ${BLOCKS}: ¡ya casi bajas del bus!`,
+  `Cuadra 8 de ${BLOCKS}: ¡a seguir a pie! Más adelante hay un skatepark.`,
+  `Cuadra 9 de ${BLOCKS}: ¡cada vez más cerca!`,
+  `Cuadra 10 de ${BLOCKS}: ¡camión varado! Sube al autoelevador y arma una escalera de cajas.`,
+  `Cuadra 11 de ${BLOCKS}: ¡Ahí va Any! ¡Alcánzala!`,
 ];
 
 function showBanner(t) { bannerText = t; bannerT = 260; }
@@ -255,7 +308,7 @@ function newPlayer(x) {
     phase: 0, squash: 0, airT: 0, upT: 0,
     idle: 0, sitT: 0,
     hit: 0, rot: 0, invuln: 0, hitStreet: null,
-    hint: null, hintGood: false, riding: false, skate: false, ramp: null,
+    hint: null, hintGood: false, riding: false, skate: false, ramp: null, pushing: false, driving: false,
   };
 }
 
@@ -285,7 +338,7 @@ function retry() {
   for (const c of coins) if (blockOf(c.x) >= blockIdx) c.got = false;
   const p = player;
   p.x = checkpoint; p.y = GROUND - p.h; p.vx = 0; p.vy = 0;
-  p.hit = 0; p.rot = 0; p.invuln = 150; p.facing = 1; p.skate = false; p.ramp = null;
+  p.hit = 0; p.rot = 0; p.invuln = 150; p.facing = 1; p.skate = false; p.ramp = null; p.driving = false;
   for (const b of boards) if (!b.dropped && blockOf(b.x) >= blockIdx) b.got = false;
   camX = Math.max(0, p.x - 300);
   state = "play";
@@ -307,7 +360,7 @@ function streetAt(x, withSite = false) {
    Nivel
    ============================================================ */
 function buildLevel() {
-  solids = []; coins = []; streets = []; deco = []; boards = [];
+  solids = []; coins = []; streets = []; deco = []; boards = []; truck = null; lift = null;
 
   for (let i = 0; i < BLOCKS - 1; i++) {
     if (i === SITE_STREET) { site = { i, x: streetStart(i), w: CONSTR_W }; continue; }
@@ -385,12 +438,82 @@ function addCoinLine(x, n, y, step = 34) {
 
 function buildBlock(b) {
   const x0 = blockStart(b), x1 = x0 + BLOCK_LEN;
+  if (b === LIFT_BLOCK) { buildLift(x0); return; }   // cuadra del camión varado: todo a medida
+  const tx = x0 + TRUCK_AT;   // pila de cajas del camión (solo en la cuadra MOVE_BLOCK)
   let x = x0 + (b === 0 ? 460 : (b === BUS_FIRST || b === BUS_FIRST + BUS_BLOCKS) ? 620 : 340);
   const kinds = b === SKATE_STREET + 1 ? ["coins"] : ["cone", "bin", "crate", "bench", "planter", "hydrant", "stall", "coins", "coins"];
-  while (x < x1 - 340) {
+  // en la cuadra del camión se deja libre el camino de la caja roja
+  const limit = b === MOVE_BLOCK ? tx - PUSH_DIST - 220 : x1 - 340;
+  while (x < limit) {
     const kind = kinds[Math.floor(Math.random() * kinds.length)];
     x += addFeature(kind, x) + rand(210, 340);
   }
+  if (b === MOVE_BLOCK) {
+    buildTruck(tx);
+    x = tx + TRUCK_SPAN + 260;
+    while (x < x1 - 340) {
+      const kind = kinds[Math.floor(Math.random() * kinds.length)];
+      x += addFeature(kind, x) + rand(210, 340);
+    }
+  }
+}
+
+/* Camión de mudanza. De izquierda a derecha:
+   caja roja (empujable) ... pila de 3 cajas | caja de carga | cabina | 2 cajas | 1 caja
+   La pila (132) es más alta que un salto, así que hay que empujar la caja roja hasta pegarla
+   a la pila, saltar sobre ella, luego sobre la pila y por último al techo del camión. */
+function buildTruck(tx) {
+  const C = CRATE;
+  const rx = tx + C + TRUCK_CARGO_W + TRUCK_CAB_W;   // inicio de las cajas para bajar
+  const box = { kind: "pushbox", type: "block", push: true, x: tx - PUSH_DIST, y: GROUND - C, w: C, h: C,
+                minX: tx - PUSH_DIST, pushed: false, docked: false };
+  solids.push(
+    { kind: "cratestack", type: "block", n: 3, x: tx, y: GROUND - 3 * C, w: C, h: 3 * C },
+    { kind: "truckhit", type: "block", x: tx + C, y: GROUND - TRUCK_H, w: TRUCK_CARGO_W, h: TRUCK_H },
+    { kind: "truckhit", type: "block", x: tx + C + TRUCK_CARGO_W, y: GROUND - CAB_H, w: TRUCK_CAB_W, h: CAB_H },
+    { kind: "cratestack", type: "block", n: 2, x: rx, y: GROUND - 2 * C, w: C, h: 2 * C },
+    { kind: "cratestack", type: "block", n: 1, x: rx + C, y: GROUND - C, w: C, h: C },
+    box
+  );
+  truck = {
+    x: tx + C, stackX: tx, crate: box,
+    roofX: tx + C, cabX: tx + C + TRUCK_CARGO_W, endX: rx + 2 * C,
+    zoneA: tx - PUSH_DIST - 100, zoneB: rx + 2 * C + 80,
+  };
+  addCoinLine(tx - PUSH_DIST + 70, 6, GROUND - 22, 34);                       // camino hasta la pila
+  coins.push({ x: tx + C / 2, y: GROUND - 3 * C - 28, got: false });          // sobre la pila
+  for (let i = 0; i < 6; i++) coins.push({ x: tx + C + 28 + i * 32, y: GROUND - TRUCK_H - 28, got: false });   // techo
+  for (let i = 0; i < 2; i++) coins.push({ x: truck.cabX + 28 + i * 44, y: GROUND - CAB_H - 28, got: false }); // cabina
+  coins.push({ x: rx + C / 2, y: GROUND - 2 * C - 28, got: false });          // bajada
+  coins.push({ x: rx + C + C / 2, y: GROUND - C - 28, got: false });
+  addCoinLine(rx + 2 * C + 40, 4, GROUND - 22, 34);
+}
+
+/* Cuadra del camión varado. De izquierda a derecha:
+   cajas sueltas y autoelevador | escalera (3 + 2 + 1 cajas, hay que armarla) | caja de carga | cabina
+   El camión es más alto que un salto: hay que apilar cajas con el autoelevador para poder subir. */
+function buildLift(x0) {
+  const C = CRATE;
+  const tx = x0 + LT_AT;
+  const cargoEnd = tx + LT_CARGO_W, endX = cargoEnd + LT_CAB_W;
+  solids.push(
+    { kind: "truckhit", type: "block", x: tx, y: GROUND - LT_H, w: LT_CARGO_W, h: LT_H },
+    { kind: "truckhit", type: "block", x: cargoEnd, y: GROUND - LT_CAB_H, w: LT_CAB_W, h: LT_CAB_H }
+  );
+  lift = {
+    tx, cargoEnd, endX,
+    cols: LT_STEPS.map((max, i) => ({ x: tx - C * (i + 1), n: 0, max, solid: null })),
+    zoneA: x0 + 150, zoneB: endX + 80, fkMin: x0 + 200,
+    fk: { x: x0 + 600, f: 1, v: 0, h: 0, load: false, wheel: 0, done: false, noPick: 0 },
+    crates: [300, 400, 720, 800, 880, 960, 1040, 1120].map((r) => ({ x: x0 + r, got: false })),   // 8 cajas para 6 lugares
+  };
+  addCoinArc(x0 + 100, 160, 5, 60);
+  addCoinLine(x0 + 650, 6, GROUND - 62, 36);                                    // se juntan manejando
+  for (const col of lift.cols) coins.push({ x: col.x + C / 2, y: GROUND - col.max * C - 28, got: false });   // sobre cada escalón
+  for (let i = 0; i < 6; i++) coins.push({ x: tx + 28 + i * 32, y: GROUND - LT_H - 28, got: false });        // techo de la carga
+  for (let i = 0; i < 2; i++) coins.push({ x: cargoEnd + 28 + i * 44, y: GROUND - LT_CAB_H - 28, got: false }); // cabina
+  addCoinArc(endX + 150, 180, 6, 70);
+  addCoinLine(endX + 280, 4, GROUND - 22, 34);
 }
 
 /* Agrega un elemento y devuelve el ancho que ocupa */
@@ -516,12 +639,48 @@ function land(p, was) {
   p.onGround = true;
 }
 
+/* Mueve la caja roja d píxeles; devuelve cuánto se movió de verdad (se frena contra otros bloques) */
+function pushCrate(s, d) {
+  let nx = Math.max(s.x + d, s.minX);
+  for (const o of solids) {
+    if (o === s || o.type !== "block") continue;
+    if (nx + s.w > o.x && nx < o.x + o.w) nx = d > 0 ? o.x - s.w : o.x + o.w;
+  }
+  const moved = nx - s.x;
+  s.x = nx;
+  return moved;
+}
+
 function moveAndCollide() {
   const p = player;
   p.x += p.vx;
+  p.pushing = false;
   for (const s of solids) {
     if (s.type !== "block") continue;
-    if (p.x + p.w > s.x && p.x < s.x + s.w && p.y + p.h > s.y + 0.5 && p.y < GROUND) {
+    if (!(p.y + p.h > s.y + 0.5 && p.y < GROUND)) continue;
+
+    // Caja roja: Clarita la empuja con la cabeza (la nariz sobresale NOSE px del cuerpo)
+    if (s.push && p.onGround && p.vx !== 0) {
+      const dir = p.vx > 0 ? 1 : -1;
+      const pen = dir > 0 ? p.x + p.w + NOSE - s.x : s.x + s.w - (p.x - NOSE);
+      const touching = pen > 0 && (dir > 0 ? p.x < s.x + s.w : p.x + p.w > s.x);
+      if (touching) {
+        const moved = pushCrate(s, dir * Math.min(pen, PUSH_SPEED));
+        p.x = dir > 0 ? s.x - p.w - NOSE : s.x + s.w + NOSE;   // la nariz queda pegada a la caja
+        p.vx = moved !== 0 ? dir * PUSH_SPEED : 0;
+        p.pushing = true;
+        if (moved !== 0) {
+          s.pushed = true; s.docked = false;
+          if (time % 7 === 0) spawnDust(dir > 0 ? s.x : s.x + s.w, GROUND - 2, -dir * rand(0.3, 1), rand(-0.8, -0.2));
+        } else if (dir > 0 && !s.docked) {   // chocó contra la pila de cajas
+          s.docked = true;
+          thudSound();
+          for (let i = 0; i < 8; i++) spawnDust(s.x + s.w, GROUND - 4, rand(0.2, 1.6), rand(-1.4, -0.3));
+        }
+        continue;
+      }
+    }
+    if (p.x + p.w > s.x && p.x < s.x + s.w) {
       if (p.vx > 0) p.x = s.x - p.w;
       else if (p.vx < 0) p.x = s.x + s.w;
       p.vx = 0;
@@ -554,11 +713,13 @@ function moveAndCollide() {
 }
 
 function control(p) {
+  p.pushing = false;
   if (p.riding) {   // viajando en el bus: va sentada en la ventanilla
     p.vx = 0; p.vy = 0; p.onGround = true; p.facing = 1; p.idle = 0;
     p.x = bus.x - p.w / 2 - 20; p.y = GROUND - p.h;
     return;
   }
+  if (p.driving) { driveLift(p); return; }   // manejando el autoelevador
   const live = state === "play";
   const dir = live ? (keys.right ? 1 : 0) - (keys.left ? 1 : 0) : 0;
   const maxV = p.skate ? 7.4 : RUN_SPEED;
@@ -594,6 +755,7 @@ function control(p) {
 function hitByCar(s) {
   const p = player;
   hearts--;
+  p.pushing = false;
   p.hit = 42;
   p.hitStreet = s;
   p.vx = -4.5;
@@ -634,6 +796,46 @@ function siteHint(p, pcx) {
   return true;
 }
 
+/* Mensajes del camión de mudanza */
+function truckHint(p, pcx) {
+  if (!truck || pcx < truck.zoneA || pcx > truck.zoneB) return false;
+  const feet = p.y + p.h;
+  const crate = truck.crate;
+  if (feet > GROUND - 6) {   // en la vereda
+    if (pcx > truck.endX) { p.hint = "¡Muy bien! Sigue tu camino"; p.hintGood = true; }
+    else if (crate.docked) { p.hint = "¡Salta sobre la caja y sube!"; p.hintGood = true; }
+    else if (pcx < truck.stackX) { p.hint = "¡Camión! Empuja la caja roja con la cabeza"; p.hintGood = false; }
+  } else if (pcx < truck.stackX - 80) {
+    /* saltando lejos del camión: sin mensaje */
+  } else if (pcx < truck.roofX) { p.hint = "¡Sigue subiendo!"; p.hintGood = true; }
+  else if (pcx < truck.cabX) { p.hint = "¡Cruza el camión!"; p.hintGood = true; }
+  else { p.hint = "¡Baja con cuidado!"; p.hintGood = true; }
+  return true;
+}
+
+/* Mensajes de la cuadra del camión varado */
+function liftHint(p, pcx) {
+  if (!lift || pcx < lift.zoneA || pcx > lift.zoneB) return false;
+  const fk = lift.fk, feet = p.y + p.h;
+  if (p.driving) {
+    p.hintGood = true;
+    if (!fk.load) p.hint = "¡Toca una caja con las horquillas!";
+    else if (liftAligned()) p.hint = "¡Ahora! Pulsa Saltar para dejar la caja";
+    else p.hint = "Lleva la caja al hueco amarillo";
+    return true;
+  }
+  if (feet > GROUND - 6) {   // en la vereda
+    if (pcx > lift.endX) { p.hint = "¡Muy bien! Sigue tu camino"; p.hintGood = true; }
+    else if (!fk.done) { p.hint = "¡Camión varado! Sube al autoelevador"; p.hintGood = false; }
+    else { p.hint = "¡Sube por la escalera de cajas!"; p.hintGood = true; }
+  } else if (pcx < lift.tx - 200) {
+    /* saltando lejos del camión: sin mensaje */
+  } else if (pcx < lift.tx) { p.hint = "¡Sigue subiendo!"; p.hintGood = true; }
+  else if (pcx < lift.cargoEnd) { p.hint = "¡Cruza el camión!"; p.hintGood = true; }
+  else { p.hint = "¡Baja con cuidado!"; p.hintGood = true; }
+  return true;
+}
+
 function updateHint(p) {
   p.hint = null; p.hintGood = false;
   if (state !== "play") return;
@@ -647,6 +849,8 @@ function updateHint(p) {
   }
   if (boards.some((b) => !b.got && !b.dropped && b.x > pcx && b.x - pcx < 500)) { p.hint = "¡Una patineta! Súbete"; p.hintGood = true; return; }
   if (siteHint(p, pcx)) return;
+  if (truckHint(p, pcx)) return;
+  if (liftHint(p, pcx)) return;
   const next = streets.find((s) => s.x + STREET_W > pcx);
   if (!next) return;
   const L = lightState(next);
@@ -694,6 +898,144 @@ function updateSkate() {
   }
 }
 
+/* ============================================================
+   Autoelevador: se maneja con ← → ; Saltar deja la caja
+   Las horquillas levantan solas la caja que tocan. Cerca de la escalera suben a la altura
+   del hueco; con la caja alineada, Saltar la deja (fuera de la escalera, Saltar la apoya en el piso).
+   ============================================================ */
+const fkCrateLeft = (fk) => fk.x + fk.f * (FK_REACH + CRATE / 2) - CRATE / 2;   // borde izquierdo de la caja que lleva
+
+function liftNextSlot() {   // el próximo hueco de la escalera (se llena desde el camión hacia afuera)
+  for (const c of lift.cols) if (c.n < c.max) return { col: c, x: c.x, bottom: c.n * CRATE };
+  return null;
+}
+
+function liftAligned() {
+  const fk = lift.fk, sl = liftNextSlot();
+  return !!(sl && fk.load && Math.abs(fkCrateLeft(fk) - sl.x) <= FK_TOL && Math.abs(fk.h - sl.bottom) <= 4);
+}
+
+function placeLiftCrate(sl) {
+  const c = sl.col;
+  c.n++;
+  if (!c.solid) {
+    c.solid = { kind: "cratestack", type: "block", n: 1, x: c.x, y: GROUND - CRATE, w: CRATE, h: CRATE };
+    solids.push(c.solid);
+  } else {
+    c.solid.n = c.n; c.solid.y = GROUND - c.n * CRATE; c.solid.h = c.n * CRATE;
+  }
+  lift.fk.load = false;
+  thudSound();
+  for (let i = 0; i < 8; i++) spawnDust(c.x + CRATE / 2, GROUND - (c.n - 1) * CRATE, rand(-1.8, 1.8), rand(-1.4, -0.3));
+  if (!liftNextSlot()) finishLift();
+}
+
+/* Suelta la caja en el piso (para poder dar la vuelta); no se puede sobre la escalera ni dentro de un bloque */
+function dropLiftCrate(cl) {
+  const fk = lift.fk;
+  const stairL = lift.cols[lift.cols.length - 1].x;
+  if (cl + CRATE > stairL - 6 && cl < lift.tx + 6) return;
+  for (const s of solids) if (s.type === "block" && cl + CRATE > s.x && cl < s.x + s.w) return;
+  lift.crates.push({ x: cl, got: false });
+  fk.load = false; fk.noPick = 45;
+  thudSound();
+  for (let i = 0; i < 5; i++) spawnDust(cl + CRATE / 2, GROUND - 2, rand(-1.4, 1.4), rand(-1, -0.2));
+}
+
+/* Escalera completa: Clarita baja del autoelevador y salta al primer escalón */
+function finishLift() {
+  const p = player, fk = lift.fk, first = lift.cols[lift.cols.length - 1];
+  fk.done = true; fk.v = 0;
+  p.driving = false;
+  p.x = first.x + CRATE / 2 - p.w / 2;
+  p.y = GROUND - CRATE - p.h;
+  p.vx = 0; p.vy = -5; p.onGround = false; p.facing = 1;
+  coinSound();
+  for (let i = 0; i < 10; i++) {
+    const a = rand(0, PI2);
+    particles.push({ kind: "star", x: p.x + p.w / 2, y: p.y, vx: Math.cos(a) * 3, vy: Math.sin(a) * 3 - 1, life: 1, size: rand(3, 5) });
+  }
+  showBanner("¡Escalera lista! Sube por las cajas y cruza el camión.");
+}
+
+function driveLift(p) {
+  const fk = lift.fk;
+  const live = state === "play";
+  const dir = live ? (keys.right ? 1 : 0) - (keys.left ? 1 : 0) : 0;
+  const act = jumpPressed && live;
+  jumpPressed = false;
+
+  fk.v += (dir * FK_SPEED - fk.v) * 0.14;
+  if (Math.abs(fk.v) < 0.05) fk.v = 0;
+  if (dir !== 0) fk.f = dir;   // siempre mira hacia donde avanza (la caja va delante)
+
+  // ayuda para alinear: con la caja cerca del hueco y sin tocar nada, se acomoda sola
+  const cl0 = fkCrateLeft(fk), sl0 = liftNextSlot();
+  let assist = 0;
+  if (fk.load && fk.f > 0 && dir === 0 && sl0 && Math.abs(fk.v) < 1.2 && Math.abs(sl0.x - cl0) < 44) assist = clamp(sl0.x - cl0, -1.1, 1.1);
+
+  // avanzar y frenar contra el camión o las cajas ya apiladas
+  const half = FK_W / 2;
+  let nx = clamp(fk.x + fk.v + assist, lift.fkMin, lift.endX);
+  if (nx !== fk.x + fk.v + assist) fk.v = 0;   // topó con el límite
+  if (fk.v !== 0) {
+    for (const s of solids) {
+      if (s.type !== "block") continue;
+      if (nx + half > s.x && nx - half < s.x + s.w) { nx = fk.v > 0 ? s.x - half : s.x + s.w + half; fk.v = 0; }
+    }
+  }
+  const moved = nx - fk.x;
+  fk.x = nx;
+  fk.wheel += moved / 13;
+  if (Math.abs(moved) > 1.5 && time % 5 === 0) spawnDust(fk.x - Math.sign(moved) * 40, GROUND - 2, -Math.sign(moved) * rand(0.3, 1), rand(-0.8, -0.2));
+
+  // mástil: viaja alto; cerca del hueco sube o baja a la altura exacta
+  const cl = fkCrateLeft(fk);
+  const sl = liftNextSlot();
+  let target = 0;
+  if (fk.load) target = (sl && fk.f > 0 && Math.abs(cl - sl.x) < 240) ? sl.bottom : FK_CARRY;
+  fk.h += clamp(target - fk.h, -FK_LIFT, FK_LIFT);
+
+  // levantar la caja que tocan las horquillas
+  if (fk.noPick > 0) fk.noPick--;
+  if (!fk.load && live && fk.noPick <= 0 && fk.h < 10) {
+    for (const c of lift.crates) {
+      if (!c.got && Math.abs(c.x - cl) < 20) {
+        c.got = true; fk.load = true;
+        coinSound();
+        for (let i = 0; i < 5; i++) spawnDust(c.x + CRATE / 2, GROUND - 4, rand(-1.4, 1.4), rand(-1, -0.2));
+        break;
+      }
+    }
+  }
+
+  // Saltar: deja la caja en el hueco si está alineada; si no, la apoya en el piso
+  if (act && fk.load) {
+    if (liftAligned()) placeLiftCrate(sl);
+    else dropLiftCrate(cl);
+  }
+
+  if (p.driving) {   // Clarita va sentada en el asiento
+    p.x = fk.x - p.w / 2; p.y = GROUND - p.h - 20;
+    p.vx = 0; p.vy = 0; p.onGround = true; p.facing = fk.f; p.idle = 0;
+  }
+}
+
+/* Subirse al autoelevador al tocarlo; el mástil baja solo si está parado */
+function updateLift() {
+  if (!lift) return;
+  const fk = lift.fk, p = player;
+  if (p.driving) return;
+  fk.v = 0;
+  fk.h = Math.max(0, fk.h - FK_LIFT);
+  const pcx = p.x + p.w / 2;
+  if (state === "play" && !fk.done && p.hit <= 0 && !p.riding && p.onGround && p.y + p.h >= GROUND - 2 && Math.abs(pcx - fk.x) < 46) {
+    p.driving = true; p.vx = 0; p.vy = 0; p.skate = false; p.facing = fk.f;
+    coinSound();
+    for (let i = 0; i < 6; i++) spawnDust(fk.x, GROUND - 2, rand(-1.5, 1.5), rand(-1, -0.2));
+  }
+}
+
 function update() {
   time++;
   const p = player;
@@ -709,11 +1051,19 @@ function update() {
   else control(p);
   updateBus();
   updateSkate();
+  updateLift();
 
   // Cámara: solo avanza hacia la derecha
   const cxp = p.x + p.w / 2;
   if (cxp > site.x - 200 && cxp < site.x + site.w + 60) {   // en la obra la cámara puede volver un poco
     const target = Math.max(site.x - 520, p.x - 300);
+    camX = camX > target ? Math.max(target, camX - 6) : target;
+  } else if (truck && cxp > truck.zoneA - 200 && cxp < truck.zoneB + 60) {   // camión de mudanza: se puede volver a buscar la caja roja
+    const floor = Math.min(camX, truck.zoneA - 110);   // la cámara puede retroceder hasta ver la caja, pero nunca salta hacia adelante
+    const target = Math.max(floor, p.x - 300);
+    camX = camX > target ? Math.max(target, camX - 6) : target;
+  } else if (lift && cxp > lift.zoneA - 200 && cxp < lift.zoneB + 60) {   // con el autoelevador también (hay que ir y venir)
+    const target = Math.max(lift.zoneA - 210, p.x - 300);
     camX = camX > target ? Math.max(target, camX - 6) : target;
   } else camX = Math.max(camX, p.x - 300);
   camX = Math.min(camX, WORLD_END - W);
@@ -733,7 +1083,7 @@ function update() {
   const pcx = p.x + p.w / 2;
 
   // Autos
-  if (state === "play" && p.hit <= 0 && p.invuln <= 0 && !p.riding) {
+  if (state === "play" && p.hit <= 0 && p.invuln <= 0 && !p.riding && !p.driving) {
     outer:
     for (const s of streets) {
       if (pcx < s.x - 200 || pcx > s.x + STREET_W + 200) continue;
@@ -787,6 +1137,7 @@ function update() {
     state = "won";
     wonT = 0;
     victorySound();
+    window.dispatchEvent(new CustomEvent("nivel-ganado", { detail: { nivel: 1 } }));
     musicWanted = false; music.pause();   // para que se escuche la fanfarria
     any.state = "stop";
     const total = Math.round(elapsed / 60);
@@ -1174,11 +1525,13 @@ function drawParkBack() {
   ctx.fillStyle = "#7e8791"; ctx.fillRect(sx, 164, park.w, 6);
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.font = "bold 60px 'Trebuchet MS', sans-serif";
-  ctx.fillStyle = "#4a90b8"; ctx.fillText("SKATE", sx + 330, 245);
-  ctx.fillStyle = "#e4572e"; ctx.fillText("BARK", sx + 620, 315);
+  ctx.font = "bold 50px 'Trebuchet MS', sans-serif";
+  ctx.fillStyle = "#4a90b8"; ctx.fillText("EL BARTO", sx + 330, 245);
+  ctx.font = "bold 44px 'Trebuchet MS', sans-serif";
+  ctx.fillStyle = "#e4572e"; ctx.fillText("DINOSAURIOS", sx + 670, 315);
+  ctx.font = "bold 60px 'Trebuchet MS', sans-serif";
   ctx.fillStyle = "#4f9d5d"; ctx.fillText("¡GUAU!", sx + 1130, 250);
   ctx.font = "bold 28px 'Trebuchet MS', sans-serif";
-  ctx.fillStyle = "#ffc82e"; ctx.fillText("OR", sx + 470, 285);
   ctx.fillStyle = "#1fa89a"; roundRect(sx + 50, 300, 130, 30, 6); ctx.fill();
   ctx.strokeStyle = INK; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = "#fff6e4"; ctx.font = "bold 15px 'Trebuchet MS', sans-serif"; ctx.fillText("SKATEPARK", sx + 115, 315);
@@ -1227,7 +1580,7 @@ function drawBus() {
   ctx.fillStyle = "#fffaf0"; ctx.fillRect(x + 2, y + 64, 296, 26);
   ctx.fillStyle = "#17171c"; ctx.fillRect(x + 100, y + 3, 100, 10);
   ctx.fillStyle = "#ffd24a"; ctx.font = "bold 8px 'Trebuchet MS', sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText("LA CENTRO / PLAZA", x + 150, y + 8.5);
+  ctx.fillText("LÍNEA OESTE", x + 150, y + 8.5);
   const wins = [[14, 56], [76, 56], [206, 40], [252, 34]];
   for (const [wx, ww] of wins) { ctx.fillStyle = "#bfe3ee"; roundRect(x + wx, y + 16, ww, 42, 5); ctx.fill(); ctx.stroke(); }
   if (player.riding) {   // Clarita asomada a la ventanilla
@@ -1298,6 +1651,80 @@ function drawTracks() {
   }
 }
 
+/* Caja de madera */
+function drawCrate(x, y, s) {
+  ctx.lineWidth = 1.6; ctx.strokeStyle = INK;
+  ctx.fillStyle = "#c58b4e";
+  roundRect(x, y, s, s, 3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#d9a064";
+  ctx.fillRect(x + 3, y + 3, s - 6, 6);
+  ctx.strokeStyle = "#8f5f2f"; ctx.lineWidth = 3;
+  ctx.strokeRect(x + 5, y + 5, s - 10, s - 10);
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.moveTo(x + 6, y + 6); ctx.lineTo(x + s - 6, y + s - 6);
+  ctx.moveTo(x + s - 6, y + 6); ctx.lineTo(x + 6, y + s - 6);
+  ctx.stroke();
+}
+
+/* Camión de mudanza (la caja de carga y la cabina son bloques invisibles "truckhit") */
+function drawTruck() {
+  if (!truck) return;
+  const x = truck.x - camX;
+  if (x > W + 60 || x + TRUCK_CARGO_W + TRUCK_CAB_W < -60) return;
+  const top = GROUND - TRUCK_H, cabTop = GROUND - CAB_H;
+  const cx = x + TRUCK_CARGO_W;
+  ctx.lineWidth = 1.8; ctx.strokeStyle = INK; ctx.lineJoin = "round";
+
+  // sombra y chasis
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  ctx.beginPath(); ctx.ellipse(x + 150, GROUND + 3, 162, 7, 0, 0, PI2); ctx.fill();
+  ctx.fillStyle = "#2a2d38";
+  roundRect(x - 2, GROUND - 40, TRUCK_CARGO_W + TRUCK_CAB_W + 4, 12, 3); ctx.fill();
+
+  // caja de carga
+  ctx.fillStyle = "#f5f6f8";
+  roundRect(x, top, TRUCK_CARGO_W, TRUCK_H - 36, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#c9d6e3"; ctx.fillRect(x + 2, top + 2, TRUCK_CARGO_W - 4, 8);
+  ctx.fillStyle = "#9aa6b5"; ctx.fillRect(x + 2, GROUND - 48, TRUCK_CARGO_W - 4, 10);
+  ctx.strokeStyle = "rgba(0,0,0,0.08)"; ctx.lineWidth = 1.2; ctx.beginPath();
+  for (let xx = x + 24; xx < x + TRUCK_CARGO_W - 6; xx += 24) { ctx.moveTo(xx, top + 12); ctx.lineTo(xx, GROUND - 49); }
+  ctx.stroke();
+  ctx.strokeStyle = "#aeb7c4"; ctx.lineWidth = 1.5;   // puertas traseras
+  ctx.beginPath(); ctx.moveTo(x + 8, top + 12); ctx.lineTo(x + 8, GROUND - 49); ctx.stroke();
+  ctx.fillStyle = "#2f3138"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = "bold 29px 'Trebuchet MS', sans-serif";
+  ctx.fillText("FLETES", x + TRUCK_CARGO_W / 2 + 4, top + 34);
+  ctx.font = "bold 24px 'Trebuchet MS', sans-serif";
+  ctx.fillText("MUDANZAS", x + TRUCK_CARGO_W / 2 + 4, top + 66);
+
+  // cabina
+  ctx.lineWidth = 1.8; ctx.strokeStyle = INK;
+  ctx.fillStyle = "#3d4a78";
+  roundRect(cx, cabTop, TRUCK_CAB_W, CAB_H - 36, 9); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.12)"; ctx.fillRect(cx + 4, cabTop + 3, TRUCK_CAB_W - 8, 5);
+  ctx.fillStyle = "#bcd6ea";
+  roundRect(cx + 10, cabTop + 12, 56, 34, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.45)";
+  ctx.beginPath(); ctx.moveTo(cx + 18, cabTop + 13); ctx.lineTo(cx + 32, cabTop + 13); ctx.lineTo(cx + 20, cabTop + 45); ctx.lineTo(cx + 12, cabTop + 45); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "#232c4b"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx + 72, cabTop + 10); ctx.lineTo(cx + 72, GROUND - 40); ctx.stroke();   // puerta
+  ctx.fillStyle = "#cfd5dd"; ctx.fillRect(cx + 62, cabTop + 50, 8, 3);                                   // manija
+  ctx.fillStyle = "#fff3b0"; circle(cx + 94, GROUND - 66, 4); ctx.fill();                                // faro
+  ctx.fillStyle = "#1c2238"; ctx.fillRect(cx + 86, GROUND - 58, 12, 14);                                 // parrilla
+  ctx.fillStyle = "#aab0b8"; roundRect(cx + 86, GROUND - 44, 16, 9, 3); ctx.fill();                      // paragolpes
+
+  // ruedas
+  for (const wx of [x + 55, x + 245]) {
+    ctx.fillStyle = "#1a1b20";
+    ctx.beginPath(); ctx.arc(wx, GROUND - 17, 22, Math.PI, 0); ctx.fill();
+    ctx.strokeStyle = INK; ctx.lineWidth = 1.8;
+    ctx.fillStyle = "#1d1d22"; circle(wx, GROUND - 17, 17); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#aab0b8"; circle(wx, GROUND - 17, 8); ctx.fill();
+    ctx.fillStyle = "#6c727c"; circle(wx, GROUND - 17, 3); ctx.fill();
+  }
+}
+
 function drawSolid(s) {
   const x = s.x - camX;
   if (x > W + 80 || x + s.w < -80) return;
@@ -1306,6 +1733,23 @@ function drawSolid(s) {
   ctx.strokeStyle = INK;
 
   switch (s.kind) {
+    case "cratestack": {   // pila de cajas junto al camión
+      for (let i = 0; i < s.n; i++) drawCrate(x, GROUND - (i + 1) * CRATE, CRATE);
+      break;
+    }
+    case "pushbox": {      // la caja roja: es la única que se empuja
+      drawCrate(x, y, s.w);
+      ctx.strokeStyle = "#e02424"; ctx.lineWidth = 3.5;
+      ctx.strokeRect(x - 5, y - 5, s.w + 10, s.h + 10);
+      if (!s.pushed) {     // flechita para que se note
+        const bob = Math.sin(time * 0.12) * 3;
+        ctx.fillStyle = "#e02424"; ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x + s.w / 2 - 8, y - 26 + bob); ctx.lineTo(x + s.w / 2 + 8, y - 26 + bob); ctx.lineTo(x + s.w / 2, y - 13 + bob);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      break;
+    }
     case "cone": {
       ctx.fillStyle = "#c95f12";
       roundRect(x - 2, GROUND - 5, s.w + 4, 5, 2); ctx.fill(); ctx.stroke();
@@ -1463,6 +1907,175 @@ function drawCoin(c) {
   ctx.fillStyle = "#ffcf4a";
   ctx.beginPath(); ctx.ellipse(sx, c.y + bob, 9 * (0.35 + 0.65 * sq), 9, 0, 0, PI2); ctx.fill();
   ctx.strokeStyle = "#b87d12"; ctx.lineWidth = 2; ctx.stroke();
+}
+
+/* ---------- Camión varado, autoelevador y escalera ---------- */
+function drawLiftTruck() {
+  const x = lift.tx - camX;
+  if (x > W + 120 || x + LT_CARGO_W + LT_CAB_W + 220 < -60) return;
+  const cx = x + LT_CARGO_W, cab = LT_CAB_W, cabTop = GROUND - LT_CAB_H;
+  const blink = Math.floor(time / 18) % 2 === 0;
+  ctx.lineWidth = 1.8; ctx.strokeStyle = INK; ctx.lineJoin = "round";
+
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath(); ctx.ellipse(x + (LT_CARGO_W + cab) / 2, GROUND + 3, 190, 7, 0, 0, PI2); ctx.fill();
+
+  // carga: 3 filas de cajas sobre la plataforma
+  for (let r = 0; r < 3; r++) for (let c = 0; c < LT_CARGO_W / CRATE; c++) drawCrate(x + c * CRATE, GROUND - LT_BED - (r + 1) * CRATE, CRATE);
+
+  // cabina azul
+  ctx.lineWidth = 1.8; ctx.strokeStyle = INK;
+  ctx.fillStyle = "#3b4a7a";
+  roundRect(cx, cabTop, cab, LT_CAB_H - 34, 10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.12)"; ctx.fillRect(cx + 4, cabTop + 3, cab - 8, 5);
+  ctx.fillStyle = "#bcd6ea";
+  roundRect(cx + 10, cabTop + 14, 58, 38, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.45)";
+  ctx.beginPath(); ctx.moveTo(cx + 18, cabTop + 15); ctx.lineTo(cx + 34, cabTop + 15); ctx.lineTo(cx + 22, cabTop + 51); ctx.lineTo(cx + 12, cabTop + 51); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "#232c4b"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx + 74, cabTop + 10); ctx.lineTo(cx + 74, GROUND - 40); ctx.stroke();
+  ctx.fillStyle = "#cfd5dd"; ctx.fillRect(cx + 63, cabTop + 58, 8, 3);
+  ctx.fillStyle = "#fff3b0"; circle(cx + cab - 7, GROUND - 66, 4); ctx.fill();
+  ctx.fillStyle = "#1c2238"; ctx.fillRect(cx + cab - 15, GROUND - 58, 12, 14);
+  ctx.fillStyle = "#aab0b8"; roundRect(cx + cab - 14, GROUND - 42, 18, 9, 3); ctx.fill();
+
+  // chasis, ruedas y plataforma
+  ctx.fillStyle = "#2a2d38"; ctx.fillRect(x + 4, GROUND - 34, LT_CARGO_W + cab - 8, 10);
+  for (const wx of [x + 40, x + 92, cx + 68]) {
+    ctx.fillStyle = "#17181d";
+    ctx.beginPath(); ctx.arc(wx, GROUND - 24, 26, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = "#1d1d22"; circle(wx, GROUND - 24, 24); ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 1.8; ctx.stroke();
+    ctx.fillStyle = "#aab0b8"; circle(wx, GROUND - 24, 11); ctx.fill();
+    ctx.fillStyle = "#6c727c"; circle(wx, GROUND - 24, 4); ctx.fill();
+  }
+  ctx.fillStyle = "#2a2d38"; ctx.strokeStyle = INK; ctx.lineWidth = 1.8;
+  roundRect(x - 2, GROUND - LT_BED, LT_CARGO_W + 4, 14, 3); ctx.fill(); ctx.stroke();
+
+  // luces de emergencia
+  ctx.fillStyle = blink ? "#ffb02e" : "#8a5a14"; circle(cx + 40, cabTop - 6, 5); ctx.fill(); ctx.lineWidth = 1.2; ctx.stroke();
+  if (blink) { ctx.fillStyle = "rgba(255,176,46,0.25)"; circle(cx + 40, cabTop - 6, 13); ctx.fill(); }
+  ctx.fillStyle = blink ? "#ff3b30" : "#8a1f19"; roundRect(x - 3, GROUND - LT_BED - 22, 5, 14, 2); ctx.fill();
+
+  // conos y cartel: el tránsito está cortado
+  const sx = cx + cab + 70;
+  for (const dx of [24, 118]) drawSolid({ kind: "cone", x: cx + cab + dx, y: GROUND - 28, w: 24, h: 28 });
+  ctx.fillStyle = "#4a4f5c"; ctx.fillRect(sx - 2, GROUND - 90, 4, 90);
+  ctx.fillStyle = "#d9382b"; roundRect(sx - 60, GROUND - 124, 120, 38, 6); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = "#fffaf0"; ctx.font = "bold 10px 'Trebuchet MS', sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("CAMIÓN VARADO", sx, GROUND - 112); ctx.fillText("TRÁNSITO CORTADO", sx, GROUND - 98);
+}
+
+function drawLiftScene() {
+  if (!lift) return;
+  drawLiftTruck();
+  const fk = lift.fk, p = player;
+  const sl = liftNextSlot();
+
+  // huecos de la escalera: el siguiente titila y se pone verde al alinear la caja
+  if (sl) {
+    const ok = liftAligned();
+    const pulse = 0.55 + 0.45 * Math.sin(time * 0.15);
+    ctx.save();
+    ctx.setLineDash([6, 5]);
+    for (const c of lift.cols) {
+      for (let l = c.n; l < c.max; l++) {
+        const gx = c.x - camX, gy = GROUND - (l + 1) * CRATE;
+        if (gx > W + 60 || gx + CRATE < -60) continue;
+        if (c === sl.col && l === c.n) {
+          ctx.fillStyle = ok ? "rgba(61,220,132,0.28)" : "rgba(255,224,102,0.16)";
+          ctx.fillRect(gx, gy, CRATE, CRATE);
+          ctx.strokeStyle = ok ? "#3ddc84" : `rgba(255,224,102,${pulse})`;
+          ctx.lineWidth = 3;
+        } else { ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 1.5; }
+        ctx.strokeRect(gx + 1, gy + 1, CRATE - 2, CRATE - 2);
+      }
+    }
+    ctx.restore();
+  }
+
+  // cajas sueltas
+  const cl = fkCrateLeft(fk);
+  let near = null;
+  for (const c of lift.crates) {
+    if (c.got) continue;
+    const gx = c.x - camX;
+    if (gx > W + 60 || gx + CRATE < -60) continue;
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.beginPath(); ctx.ellipse(gx + CRATE / 2, GROUND + 2, 26, 4, 0, 0, PI2); ctx.fill();
+    drawCrate(gx, GROUND - CRATE, CRATE);
+    if (!near || Math.abs(c.x - cl) < Math.abs(near.x - cl)) near = c;
+  }
+  if (p.driving && !fk.load && near) {   // flechita sobre la caja más cercana
+    const bob = Math.sin(time * 0.12) * 3, ax = near.x - camX + CRATE / 2;
+    ctx.fillStyle = "#ffe066"; ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(ax - 8, GROUND - CRATE - 30 + bob); ctx.lineTo(ax + 8, GROUND - CRATE - 30 + bob); ctx.lineTo(ax, GROUND - CRATE - 16 + bob); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+}
+
+/* Autoelevador amarillo (mira a la derecha; se espeja si va hacia la izquierda) */
+function drawForklift() {
+  if (!lift) return;
+  const fk = lift.fk, p = player, f = fk.f;
+  const x = fk.x - camX;
+  if (x < -170 || x > W + 170) return;
+  const yel = "#f2b01e", yelD = "#d99c0b", dark = "#3b3f4c";
+
+  ctx.save();
+  ctx.translate(x, GROUND);
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath(); ctx.ellipse(10 * f, 2, 66, 5, 0, 0, PI2); ctx.fill();
+  ctx.scale(f, 1);
+  ctx.lineWidth = 1.6; ctx.strokeStyle = INK; ctx.lineJoin = "round"; ctx.lineCap = "round";
+
+  const wheel = (wx, wy, r) => {
+    ctx.fillStyle = "#1d1d22"; circle(wx, wy, r); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#aab0b8"; circle(wx, wy, r * 0.5); ctx.fill();
+    ctx.strokeStyle = "#555"; ctx.lineWidth = 2; ctx.beginPath();
+    ctx.moveTo(wx + Math.cos(fk.wheel) * r * 0.5, wy + Math.sin(fk.wheel) * r * 0.5);
+    ctx.lineTo(wx - Math.cos(fk.wheel) * r * 0.5, wy - Math.sin(fk.wheel) * r * 0.5);
+    ctx.stroke();
+    ctx.strokeStyle = INK; ctx.lineWidth = 1.6;
+  };
+
+  wheel(-27, -13, 13);
+  ctx.fillStyle = yel; roundRect(-40, -44, 82, 30, 7); ctx.fill(); ctx.stroke();            // cuerpo
+  ctx.fillStyle = yelD; ctx.fillRect(-34, -30, 70, 3);
+  ctx.fillStyle = yelD; roundRect(-46, -52, 30, 40, 8); ctx.fill(); ctx.stroke();           // contrapeso
+  ctx.fillStyle = dark; roundRect(-22, -52, 22, 9, 3); ctx.fill(); ctx.stroke();            // asiento
+  ctx.fillStyle = "#fff6c4"; circle(40, -34, 3); ctx.fill();                                // faro
+
+  if (p.driving) {   // Clarita al volante
+    ctx.save(); ctx.translate(-6, -50); ctx.scale(0.62, 0.62); drawDogSit(); ctx.restore();
+  }
+
+  // jaula de seguridad y volante
+  ctx.strokeStyle = dark; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(-28, -46); ctx.lineTo(-28, -98); ctx.moveTo(10, -44); ctx.lineTo(12, -98); ctx.stroke();
+  ctx.fillStyle = dark; ctx.strokeStyle = INK; ctx.lineWidth = 1.4;
+  roundRect(-34, -106, 52, 8, 3); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = dark; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(14, -44); ctx.lineTo(5, -62); ctx.stroke();
+  ctx.fillStyle = "#222"; ctx.beginPath(); ctx.ellipse(4, -64, 3, 8, -0.3, 0, PI2); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 1.6;
+  const on = Math.floor(time / 14) % 2 === 0;
+  ctx.fillStyle = on ? "#ffb02e" : "#8a5a14"; circle(-10, -112, 4); ctx.fill(); ctx.stroke();
+
+  // mástil, carro y horquillas (suben y bajan con fk.h)
+  ctx.fillStyle = "#8f98a3";
+  roundRect(38, -152, 9, 140, 2); ctx.fill(); ctx.stroke();
+  roundRect(47, -152, 5, 140, 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#6c727c"; roundRect(50, -fk.h - 46, 7, 46, 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#c9ced6"; roundRect(52, -fk.h - 5, 56, 5, 1.5); ctx.fill(); ctx.stroke();
+  if (fk.load) drawCrate(FK_REACH, -fk.h - CRATE, CRATE);
+  wheel(24, -16, 16);
+
+  if (!p.driving && !fk.done) {   // flechita: "sube acá"
+    const bob = Math.sin(time * 0.12) * 3;
+    ctx.fillStyle = "#ffe066"; ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(-18, -134 + bob); ctx.lineTo(-2, -134 + bob); ctx.lineTo(-10, -120 + bob); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /* ---------- Autos ---------- */
@@ -1623,6 +2236,7 @@ function drawDogRun(p) {
   for (const l of legs) lowest = Math.max(lowest, Math.cos(l.t) * D_UP + Math.cos(l.t - l.f) * D_LOW);
   ctx.translate(0, -(lowest + 2.6));
   ctx.rotate(p.airT * lerp(0.2, -0.25, p.upT));
+  if (p.pushing) ctx.rotate(0.07);   // se inclina hacia adelante
 
   const S = { x: 13, y: -1 }, Hp = { x: -16, y: -1 };
 
@@ -1650,7 +2264,7 @@ function drawDogRun(p) {
   ctx.beginPath(); ctx.ellipse(-12, -17, 3.5, 1.6, 0, 0, PI2); ctx.fill();
 
   // cabeza
-  drawDogHead(27, -27, r * 0.9 + p.airT * 0.4, r > 0.3 || p.airT > 0.5, p.airT * lerp(-0.1, 0.1, p.upT));
+  drawDogHead(27, -27, r * 0.9 + p.airT * 0.4, r > 0.3 || p.airT > 0.5, p.airT * lerp(-0.1, 0.1, p.upT) + (p.pushing ? 0.5 : 0));
 
   // patas cercanas
   drawDogLeg(Hp, legs[2], true);
@@ -1862,6 +2476,10 @@ function drawHUD() {
   ctx.fillStyle = "#fff6e4";
   const siteNow = pcx > site.x && pcx < site.x + site.w;
   const siteAhead = site.x + site.w > pcx && site.x - pcx < 1300;
+  const truckNow = !!truck && pcx > truck.zoneA && pcx < truck.zoneB;
+  const truckAhead = !!truck && truck.zoneB > pcx && truck.zoneA - pcx < 1300;
+  const liftNow = !!lift && pcx > lift.zoneA && pcx < lift.zoneB;
+  const liftAhead = !!lift && lift.zoneB > pcx && lift.zoneA - pcx < 1300;
   if (p.riding) {
     ctx.fillStyle = "#e4572e"; circle(W / 2 - 128, 31, 9); ctx.fill();
     ctx.fillStyle = "#fff6e4";
@@ -1874,6 +2492,15 @@ function drawHUD() {
     ctx.fillStyle = "#ffb02e"; circle(W / 2 - 128, 31, 9); ctx.fill();
     ctx.fillStyle = "#fff6e4";
     ctx.fillText(siteNow ? "¡Obra! Sube, cruza y baja" : "Adelante: calle en obra", W / 2 - 108, 32);
+  } else if (truckNow || (truckAhead && (!next || truck.zoneA < next.x))) {
+    ctx.fillStyle = "#e02424"; circle(W / 2 - 128, 31, 9); ctx.fill();
+    ctx.fillStyle = "#fff6e4";
+    ctx.fillText(truckNow ? "¡Mudanza! Empuja la caja roja" : "Adelante: camión de mudanza", W / 2 - 108, 32);
+  } else if (liftNow || (liftAhead && (!next || lift.zoneA < next.x))) {
+    ctx.fillStyle = "#f2b01e"; circle(W / 2 - 128, 31, 9); ctx.fill();
+    ctx.fillStyle = "#fff6e4";
+    const placed = lift.cols.reduce((a, c) => a + c.n, 0), need = lift.cols.reduce((a, c) => a + c.max, 0);
+    ctx.fillText(!liftNow ? "Adelante: camión varado" : lift.fk.done ? "¡Escalera lista! Sube" : `Autoelevador: ${placed} de ${need} cajas`, W / 2 - 108, 32);
   } else if (next) {
     const L = lightState(next);
     const inside = pcx > next.x && pcx < next.x + STREET_W;
@@ -1965,6 +2592,8 @@ function draw() {
   drawDeco();
 
   // objetos y monedas
+  drawTruck();
+  drawLiftScene();
   for (const s of solids) drawSolid(s);
   for (const c of coins) if (!c.got) drawCoin(c);
   for (const b of boards) if (!b.got) drawBoardItem(b);
@@ -1977,7 +2606,8 @@ function draw() {
 
   drawBus();
   drawAny();
-  if (!player.riding) drawDog(player);
+  drawForklift();
+  if (!player.riding && !player.driving) drawDog(player);
 
   for (const s of streets) {
     const sx = s.x - camX;
@@ -1992,7 +2622,7 @@ function draw() {
   // globo de ayuda sobre Clarita
   const p = player;
   if (state === "play" && p.hint && p.hit <= 0) {
-    drawBubble(p.hint, p.x + p.w / 2 - camX, p.y - 28, (p.hintGood || p.hint.startsWith("¡Verde")) ? "#1c8a4d" : "#b3261e");
+    drawBubble(p.hint, p.x + p.w / 2 - camX, p.driving ? GROUND - 112 : p.y - 28, (p.hintGood || p.hint.startsWith("¡Verde")) ? "#1c8a4d" : "#b3261e");
   }
   ctx.restore();
 
@@ -2014,6 +2644,8 @@ function draw() {
       "Any salió a pasear en bici y Clarita salió corriendo a buscarla.",
       `Recorre ${BLOCKS} cuadras, junta moneditas y espera el verde para cruzar.`,
       "Si una calle está en obra: sube por el edificio, cruza el puente y baja.",
+      "Si un camión de mudanza tapa la vereda: empuja la caja roja con la cabeza y sube por las cajas.",
+      "Si un camión varado corta el tránsito: maneja el autoelevador y arma una escalera de cajas.",
       "En la parada hay un bus: camina hasta él y viaja 3 cuadras.",
       "En el skatepark busca la patineta: con ella vas más rápido y saltas las rampas.",
       "Mover: ← →   Saltar: Espacio   (en la calle no se salta)",
@@ -2044,6 +2676,7 @@ let acc = 0;
 const STEP = 1000 / 60;
 
 function loop(now) {
+  if (!__alive) return;
   acc += Math.min(now - last, 100);
   last = now;
   while (acc >= STEP) {
@@ -2051,6 +2684,22 @@ function loop(now) {
     acc -= STEP;
   }
   draw();
-  requestAnimationFrame(loop);
+  __raf = requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
+__raf = requestAnimationFrame(loop);
+
+
+/* --- Limpieza: el menú llama a esto antes de cargar otro nivel --- */
+window.__nivelActual = {
+  id: 1,
+  destroy() {
+    __alive = false;
+    cancelAnimationFrame(__raf);
+    for (const [t, ty, fn, o] of __listeners) t.removeEventListener(ty, fn, o);
+    __listeners.length = 0;
+    musicWanted = false; music.pause();
+    try { if (audioCtx) audioCtx.close(); } catch (_) {}
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  },
+};
+})();
