@@ -1,229 +1,202 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Clarita busca a Any - Juego Completo</title>
+    <!-- Ajusta el juego a la pantalla del celular automáticamente -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Clarita busca a Any</title>
     <style>
+        /* Estilos globales */
         body {
-            background-color: #231a1c;
-            color: #fff6e4;
-            font-family: 'Trebuchet MS', sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
             margin: 0;
-            min-height: 100vh;
-        }
-        #game-container {
-            position: relative;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        canvas {
-            display: block;
-            background-color: #000;
-        }
-        .menu-niveles {
-            margin-top: 15px;
+            padding: 0;
+            background-color: #231a1c;
             display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 15px;
-        }
-        .btn-nivel {
-            padding: 12px 24px;
-            font-size: 16px;
-            font-weight: bold;
-            border: none;
-            border-radius: 25px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
-        }
-        .btn-activo {
-            background-color: #ffcf4a;
-            color: #231a1c;
-        }
-        .btn-activo:hover {
-            background-color: #ffe066;
-            transform: translateY(-2px);
-        }
-        .btn-bloqueado {
-            background-color: #4a4545;
-            color: #8c8585;
-            cursor: not-allowed;
-        }
-        /* Video de introducción (se muestra una sola vez, antes del nivel 1) */
-        #video-intro {
-            position: absolute;
-            inset: 0;
-            z-index: 10;
-            background: #000;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        #video-intro video {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            background: #000;
-        }
-        #video-intro button {
-            position: absolute;
-            border: none;
-            cursor: pointer;
-            font-family: inherit;
-            font-weight: bold;
-            color: #231a1c;
-            background-color: #ffcf4a;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-            transition: transform 0.2s ease, background-color 0.2s ease;
-        }
-        #video-intro button:hover { background-color: #ffe066; transform: scale(1.04); }
-        #btnPlayIntro {
-            padding: 18px 38px;
-            font-size: 24px;
-            border-radius: 40px;
-        }
-        #btnSkipIntro {
-            right: 16px;
-            bottom: 16px;
-            padding: 10px 20px;
-            font-size: 15px;
-            border-radius: 20px;
-            opacity: 0.85;
-            display: none;
-        }
-        /* Pantalla final (imagen finfin + fuegos artificiales + botones) */
-        #pantalla-final {
-            position: absolute;
-            inset: 0;
-            z-index: 11;
-            display: none;
-            align-items: flex-end;
-            justify-content: center;
-            background: #0b0f2a url("multimedia/finfin.jpg") center / cover no-repeat;
-        }
-        #fuegos {
-            background: transparent;   /* sin esto hereda el fondo negro de "canvas" y tapa la imagen finfin.jpg */
-            position: absolute;
-            inset: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-        }
-        .final-botones {
-            position: relative;
-            display: flex;
-            gap: 18px;
-            margin-bottom: 26px;
-        }
-        .final-botones button {
-            padding: 14px 28px;
-            font-size: 18px;
-            font-weight: bold;
-            font-family: inherit;
-            border: none;
-            border-radius: 30px;
-            cursor: pointer;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.6);
-            transition: transform 0.2s ease, background-color 0.2s ease;
-        }
-        .final-botones button:hover { transform: scale(1.05); }
-        #btnReiniciar { background-color: #ffcf4a; color: #231a1c; }
-        #btnReiniciar:hover { background-color: #ffe066; }
-        #btnFin { background-color: #4a3f43; color: #fff6e4; }
-        #btnFin:hover { background-color: #6a5a60; }
-        #final-gracias {
-            display: none;
-            position: absolute;
-            inset: 0;
-            background: #000;
-            color: #fff6e4;
-            align-items: center;
-            justify-content: center;
             flex-direction: column;
-            gap: 10px;
-            text-align: center;
-            font-size: 26px;
-            z-index: 2;
-        }
-        #final-gracias small { font-size: 16px; opacity: 0.7; }
-        #pantalla-final.cerrado #final-gracias { display: flex; }
-        /* Controles táctiles (celular / tablet) */
-        .controles-tactiles {
-            margin-top: 12px;
-            display: flex;
-            gap: 14px;
-            touch-action: none;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            overflow-x: hidden;
+            font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+            color: #fff6e4;
             user-select: none;
             -webkit-user-select: none;
         }
-        .controles-tactiles button {
-            width: 72px;
-            height: 72px;
-            font-size: 28px;
-            border: none;
-            border-radius: 50%;
-            background-color: #4a3f43;
-            color: #fff6e4;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-            touch-action: none;
+
+        /* Contenedor principal adaptable */
+        #contenedor-principal {
+            width: 100%;
+            max-width: 960px;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            box-sizing: border-box;
         }
-        .controles-tactiles button.on {
-            background-color: #ffcf4a;
+
+        /* El canvas se escala manteniendo proporciones */
+        canvas#game {
+            width: 100%;
+            height: auto;
+            display: block;
+            background-color: #000;
+        }
+
+        /* ---- CONTROLES TÁCTILES VISIBLES PARA EL CELULAR ---- */
+        .pad-digital {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            max-width: 500px;
+            padding: 20px;
+            box-sizing: border-box;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 16px;
+            margin-top: 10px;
+        }
+
+        .cruceta-direcciones {
+            display: flex;
+            gap: 15px;
+        }
+
+        /* Diseño de los botones de juego */
+        .btn-mando {
+            width: 65px;
+            height: 65px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #fff6e4;
+            background: #3b3f4c;
+            border: 3px solid #fff6e4;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            touch-action: none; /* Evita que el celular haga zoom al tocar rápido */
+            transition: background 0.1s, transform 0.1s;
+        }
+
+        /* Efecto visual al mantenerlos presionados en el celular */
+        .btn-mando:active, .btn-mando.on {
+            background: #f2b01e;
             color: #231a1c;
+            transform: scale(0.92);
+        }
+
+        .btn-salto-contenedor {
+            display: flex;
+            align-items: center;
+        }
+
+        #btnJump {
+            background: #d9382b; /* Color rojo para el botón de saltar */
+            width: 75px;
+            height: 75px;
+        }
+
+        /* ---- MENÚ INFERIOR DE SELECCIÓN DE NIVELES ---- */
+        .menu-niveles {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            padding: 15px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .btn-nivel {
+            padding: 10px 15px;
+            font-size: 14px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        .btn-activo {
+            background-color: #f2b01e;
+            color: #231a1c;
+        }
+
+        .btn-bloqueado {
+            background-color: #4a4f5c;
+            color: #8f98a3;
+            cursor: not-allowed;
+        }
+
+        /* Infraestructuras multimedia requeridas por menu.js */
+        #video-intro {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #000;
+            z-index: 10;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #pantalla-final {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #000;
+            z-index: 10;
         }
     </style>
 </head>
 <body>
 
-    <h1 style="margin-bottom: 10px; font-size: 28px;">Clarita busca a Any</h1>
-
-    <div id="game-container">
-        <canvas id="game" width="960" height="540"></canvas>
-
-        <!-- Video de introducción: lo maneja menu.js -->
+    <div id="contenedor-principal">
+        
+        <!-- Elementos del video introductorio -->
         <div id="video-intro">
-            <video id="videoIntro" src="multimedia/videointro.mp4" playsinline preload="auto"></video>
-            <button id="btnPlayIntro">▶ Toca para comenzar</button>
-            <button id="btnSkipIntro">Saltar ⏭</button>
+            <video id="videoIntro" width="100%" height="auto"></video>
+            <button id="btnPlayIntro" class="btn-nivel btn-activo">▶ Reproducir Intro</button>
+            <button id="btnSkipIntro" class="btn-nivel btn-activo" style="display:none;">Saltar ⏭</button>
         </div>
 
-        <!-- Pantalla final: la maneja menu.js al terminar el último nivel -->
+        <!-- Elementos de la pantalla final -->
         <div id="pantalla-final">
             <canvas id="fuegos" width="960" height="540"></canvas>
-            <div class="final-botones">
-                <button id="btnReiniciar">¿Quieres comenzar de nuevo?</button>
-                <button id="btnFin">Fin</button>
+            <button id="btnReiniciar">¿Quieres comenzar de nuevo?</button>
+            <button id="btnFin">Fin</button>
+        </div>
+
+        <!-- Pantalla de renderizado del juego (Canvas) -->
+        <canvas id="game" width="960" height="540"></canvas>
+
+        <!-- CONTROLES DIGITALES VISIBLES PARA EL TELÉFONO -->
+        <div class="pad-digital">
+            <div class="cruceta-direcciones">
+                <!-- Botón Izquierda -->
+                <button id="btnLeft" class="btn-mando">◀</button>
+                <!-- Botón Derecha -->
+                <button id="btnRight" class="btn-mando">▶</button>
             </div>
-            <div id="final-gracias">
-                <div>¡Gracias por jugar! 💛</div>
-                <small>Ya puedes cerrar esta pestaña.</small>
+            <div class="btn-salto-contenedor">
+                <!-- Botón Saltar -->
+                <button id="btnJump" class="btn-mando">▲</button>
             </div>
         </div>
+
+        <!-- Bloque inferior de selección y progreso de niveles -->
+        <div class="menu-niveles">
+            <button id="btnNivel1" class="btn-nivel"></button>
+            <button id="btnNivel2" class="btn-nivel"></button>
+            <button id="btnNivel3" class="btn-nivel"></button>
+            <button id="btnNivel4" class="btn-nivel"></button>
+        </div>
+
     </div>
 
-    <!-- Controles táctiles: los usan script.js, nivel2.js, nivel3.js y nivel4.js -->
-    <div class="controles-tactiles">
-        <button id="btnLeft" aria-label="Izquierda">◀</button>
-        <button id="btnJump" aria-label="Saltar">▲</button>
-        <button id="btnRight" aria-label="Derecha">▶</button>
-    </div>
-
-    <!-- Los botones interactivos que controlará nuestro menu.js -->
-    <div class="menu-niveles">
-        <button id="btnNivel1" class="btn-nivel btn-activo">Nivel 1: La Ciudad</button>
-        <button id="btnNivel2" class="btn-nivel btn-bloqueado" disabled>🔒 Nivel 2: Tormenta</button>
-        <button id="btnNivel3" class="btn-nivel btn-bloqueado" disabled>🔒 Nivel 3: Noche</button>
-        <button id="btnNivel4" class="btn-nivel btn-bloqueado" disabled>🔒 Nivel 4: Invierno</button>
-    </div>
-
-    <!-- Cargamos únicamente el administrador central: él carga script.js, nivel2.js, nivel3.js y nivel4.js -->
+    <!-- Ejecución del núcleo del juego -->
     <script src="menu.js"></script>
 
 </body>
