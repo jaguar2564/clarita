@@ -1,0 +1,282 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <!-- Esta línea es la que ajusta todo el juego a la pantalla del celular automáticamente -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Clarita busca a Any - Juego Completo</title>
+    <style>
+        /* Estilos generales responsivos */
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #231a1c;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            overflow-x: hidden;
+            font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+            color: #fff6e4;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* Contenedor principal del juego */
+        #contenedor-principal {
+            width: 100%;
+            max-width: 960px;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            box-sizing: border-box;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin: 10px 0;
+            text-align: center;
+        }
+
+        /* El canvas ahora se encoge y se adapta fluidamente al ancho del celular */
+        canvas#game {
+            width: 100%;
+            height: auto;
+            display: block;
+            background-color: #000;
+        }
+
+        /* ---- DISEÑO DE LOS BOTONES TÁCTILES VISIBLES PARA EL CELULAR ---- */
+        .pad-digital {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            max-width: 500px;
+            padding: 15px 20px;
+            box-sizing: border-box;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 16px;
+            margin-top: 10px;
+        }
+
+        .cruceta-direcciones {
+            display: flex;
+            gap: 15px;
+        }
+
+        .btn-mando {
+            width: 65px;
+            height: 65px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #fff6e4;
+            background: #3b3f4c;
+            border: 3px solid #fff6e4;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            touch-action: none; /* Bloquea gestos del navegador al presionar rápido */
+            transition: background 0.1s, transform 0.1s;
+        }
+
+        /* Animación cuando presionas los botones en la pantalla táctil */
+        .btn-mando:active, .btn-mando.on {
+            background: #f2b01e;
+            color: #231a1c;
+            transform: scale(0.92);
+        }
+
+        .btn-salto-contenedor {
+            display: flex;
+            align-items: center;
+        }
+
+        #btnJump {
+            background: #d9382b; /* Botón de salto destacado en rojo */
+            width: 75px;
+            height: 75px;
+        }
+
+        /* ---- MENÚ INFERIOR DE NIVELES ---- */
+        .menu-niveles {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            padding: 15px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .btn-nivel {
+            padding: 10px 15px;
+            font-size: 14px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        .btn-activo {
+            background-color: #f2b01e;
+            color: #231a1c;
+        }
+
+        .btn-bloqueado {
+            background-color: #4a4f5c;
+            color: #8f98a3;
+            cursor: not-allowed;
+        }
+
+        /* Estructuras multimedia integradas de tu juego original */
+        #video-intro {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #000;
+            z-index: 10;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #pantalla-final {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 10;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+            box-sizing: border-box;
+            background-color: #000;
+        }
+
+        .imagen-fondo-final {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: contain;
+            z-index: 1;
+        }
+
+        canvas#fuegos {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        .botones-final {
+            position: relative;
+            z-index: 3;
+            display: flex;
+            gap: 20px;
+            margin-bottom: 40px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            border-radius: 12px;
+        }
+
+        .botones-final button {
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            border: 2px solid #fff;
+            border-radius: 8px;
+            cursor: pointer;
+            color: #fff;
+        }
+
+        #btnReiniciar { background-color: #2e86ab; }
+        #btnFin { background-color: #d9382b; }
+
+        /* Pantalla negra de agradecimiento original */
+        #pantalla-final.cerrado {
+            justify-content: center;
+        }
+        #pantalla-final.cerrado .imagen-fondo-final,
+        #pantalla-final.cerrado canvas#fuegos,
+        #pantalla-final.cerrado .botones-final {
+            display: none !important;
+        }
+        .mensaje-agradecimiento {
+            display: none;
+            position: relative;
+            z-index: 4;
+            text-align: center;
+            flex-direction: column;
+            gap: 15px;
+        }
+        #pantalla-final.cerrado .mensaje-agradecimiento {
+            display: flex;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="contenedor-principal">
+        
+        <h1>Clarita busca a Any</h1>
+
+        <!-- Contenedor del video de introducción -->
+        <div id="video-intro">
+            <video id="videoIntro" width="100%" height="auto"></video>
+            <div style="margin-top: 15px; display: flex; gap: 15px;">
+                <button id="btnPlayIntro" class="btn-nivel btn-activo">▶ Toca para comenzar</button>
+                <button id="btnSkipIntro" class="btn-nivel btn-activo" style="display:none;">Saltar ⏭</button>
+            </div>
+        </div>
+
+        <!-- Pantalla final con tu imagen, pirotecnia y flujos originales -->
+        <div id="pantalla-final">
+            <img src="multimedia/finfin.jpg" alt="Fin" class="imagen-fondo-final">
+            <canvas id="fuegos" width="960" height="540"></canvas>
+            
+            <div class="botones-final">
+                <button id="btnReiniciar">¿Quieres comenzar de nuevo?</button>
+                <button id="btnFin">Fin</button>
+            </div>
+
+            <!-- Estructura de texto original para cuando se cierra el juego -->
+            <div class="mensaje-agradecimiento">
+                <h2>¡Gracias por jugar! 💛</h2>
+                <p>Ya puedes cerrar esta pestaña.</p>
+            </div>
+        </div>
+
+        <!-- Canvas Principal del Juego -->
+        <canvas id="game" width="960" height="540"></canvas>
+
+        <!-- LOS NUEVOS BOTONES TÁTILES INTEGRADOS Y VISIBLES -->
+        <div class="pad-digital">
+            <div class="cruceta-direcciones">
+                <button id="btnLeft" class="btn-mando">◀</button>
+                <button id="btnRight" class="btn-mando">▶</button>
+            </div>
+            <div class="btn-salto-contenedor">
+                <button id="btnJump" class="btn-mando">▲</button>
+            </div>
+        </div>
+
+        <!-- Panel de Niveles Inferior requerido por menu.js -->
+        <div class="menu-niveles">
+            <button id="btnNivel1" class="btn-nivel"></button>
+            <button id="btnNivel2" class="btn-nivel"></button>
+            <button id="btnNivel3" class="btn-nivel"></button>
+            <button id="btnNivel4" class="btn-nivel"></button>
+        </div>
+
+    </div>
+
+    <!-- Carga e inicio del Administrador Central de Niveles -->
+    <script src="menu.js"></script>
+
+</body>
+</html>
